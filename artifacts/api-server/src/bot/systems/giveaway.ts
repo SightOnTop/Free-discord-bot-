@@ -2,7 +2,7 @@ import {
   type Client, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
 } from "discord.js";
 import {
-  createGiveaway, updateGiveaway, getActiveGiveaways, getGiveawayById, getExpiredGiveaways,
+  createGiveaway, updateGiveaway, getActiveGiveaways, getGiveawayById, getExpiredGiveaways, toggleGiveawayEntry,
 } from "../utils/dbops.js";
 import { parseDuration, formatDuration, discordTimestamp, MAX_TIMEOUT_MS } from "../utils/time.js";
 import { successEmbed, dangerEmbed } from "../utils/embeds.js";
@@ -139,30 +139,21 @@ export async function handleGiveawayButton(interaction: ButtonInteraction) {
   const giveawayId = parseInt(parts[2] ?? "0", 10);
   if (!giveawayId) return;
 
-  const g = await getGiveawayById(giveawayId);
-  if (!g || g.ended) {
-    await interaction.reply({ embeds: [dangerEmbed("Giveaway terminé", "Ce giveaway est déjà terminé.")], ephemeral: true });
+  const result = await toggleGiveawayEntry(giveawayId, interaction.user.id);
+  if (!result) {
+    await interaction.reply({ embeds: [dangerEmbed("Giveaway terminé", "Ce giveaway est déjà terminé ou introuvable.")], ephemeral: true });
     return;
   }
 
-  const userId = interaction.user.id;
-  if (g.entries.includes(userId)) {
-    // Remove entry (toggle)
-    const entries = g.entries.filter((e) => e !== userId);
-    await updateGiveaway(giveawayId, { entries });
-    await interaction.reply({ embeds: [{ color: 0xff9f0a, description: "❌ Tu as retiré ta participation." } as never], ephemeral: true });
-  } else {
-    const entries = [...g.entries, userId];
-    await updateGiveaway(giveawayId, { entries });
-    await interaction.reply({ embeds: [{ color: 0x00d26a, description: "✅ Tu participes au giveaway ! Bonne chance 🍀" } as never], ephemeral: true });
-  }
-
-  // Update message embed count
-  const msg = interaction.message;
-  const updatedG = await getGiveawayById(giveawayId);
-  if (updatedG && !updatedG.ended) {
-    await msg.edit({ embeds: [giveawayEmbed(updatedG)] }).catch(() => null);
-  }
+  const { giveaway: updatedG, added } = result;
+  await interaction.reply({
+    embeds: [{
+      color: added ? 0x00d26a : 0xff9f0a,
+      description: added ? "✅ Tu participes au giveaway ! Bonne chance 🍀" : "❌ Tu as retiré ta participation.",
+    } as never],
+    ephemeral: true,
+  });
+  await interaction.message.edit({ embeds: [giveawayEmbed(updatedG)] }).catch(() => null);
 }
 
 export async function setupGiveaways(client: Client) {
@@ -177,12 +168,6 @@ export async function setupGiveaways(client: Client) {
     logger.error({ err }, "[Giveaway] Erreur restauration");
   }
 
-  client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isButton()) return;
-    if (interaction.customId.startsWith("giveaway:enter:")) {
-      await handleGiveawayButton(interaction).catch((err) => logger.error({ err }, "[Giveaway] Button error"));
-    }
-  });
 }
 
 export { endGiveaway as forceEndGiveaway, timers as giveawayTimers };
