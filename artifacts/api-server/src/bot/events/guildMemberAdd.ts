@@ -13,15 +13,17 @@ export const guildMemberAddEvent: BotEvent = {
       await upsertGuild({ guildId: member.guild.id }).catch(() => null);
     }
 
-    // Auto-role
-    if (config?.autoRoleId && !member.user.bot) {
+    const captchaConfigured = Boolean(config?.captchaEnabled && config.captchaRoleId && config.captchaChannelId);
+
+    // Do not grant the autorole before a configured captcha is completed.
+    if (config?.autoRoleId && !member.user.bot && !captchaConfigured) {
       await member.roles.add(config.autoRoleId).catch((err) =>
         logger.warn({ err }, "[Moderax] Impossible d'ajouter l'autorole")
       );
     }
 
     // Captcha (overrides autorole — role given after captcha completion)
-    if (config?.captchaEnabled && config.captchaRoleId && !member.user.bot) {
+    if (captchaConfigured && !member.user.bot) {
       await startCaptcha(member).catch((err) =>
         logger.warn({ err }, "[Moderax] Erreur démarrage captcha")
       );
