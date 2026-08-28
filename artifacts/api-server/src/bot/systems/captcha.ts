@@ -14,8 +14,12 @@ import { getGuild } from "../utils/dbops.js";
 import { successEmbed, dangerEmbed } from "../utils/embeds.js";
 import { logger } from "../../lib/logger.js";
 
-// pending: userId → { guildId, code, roleId, timeout }
+// pending: guildId:userId → { guildId, code, roleId, timeout }
 const pending = new Map<string, { guildId: string; code: string; roleId: string; timeout: NodeJS.Timeout }>();
+
+function captchaKey(guildId: string, userId: string) {
+  return guildId + ":" + userId;
+}
 
 function generateCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -32,11 +36,11 @@ export async function startCaptcha(member: GuildMember) {
 
   // Timeout: 3 minutes
   const timeout = setTimeout(async () => {
-    pending.delete(member.id);
+    pending.delete(captchaKey(member.guild.id, member.id));
     await member.kick("Captcha non complété dans les 3 minutes").catch(() => null);
   }, 3 * 60_000);
 
-  pending.set(member.id, {
+  pending.set(captchaKey(member.guild.id, member.id), {
     guildId: member.guild.id,
     code,
     roleId: config.captchaRoleId,
@@ -55,7 +59,7 @@ export async function startCaptcha(member: GuildMember) {
 
   const button = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`captcha:${member.id}`)
+      .setCustomId(`captcha:${member.guild.id}:${member.id}`)
       .setLabel("🔐 Vérifier")
       .setStyle(ButtonStyle.Primary)
   );
@@ -64,10 +68,10 @@ export async function startCaptcha(member: GuildMember) {
 }
 
 export async function handleCaptchaButton(interaction: ButtonInteraction) {
-  const userId = interaction.customId.split(":")[1];
-  if (!userId) return;
+  const [, guildId, userId] = interaction.customId.split(":");
+  if (!guildId || !userId) return;
 
-  const data = pending.get(userId);
+  const data = pending.get(captchaKey(guildId, userId));
   if (!data) {
     await interaction.reply({ embeds: [dangerEmbed("Session expirée", "Ce captcha a expiré ou est invalide.")], ephemeral: true });
     return;
@@ -79,7 +83,7 @@ export async function handleCaptchaButton(interaction: ButtonInteraction) {
   }
 
   const modal = new ModalBuilder()
-    .setCustomId(`captcha_modal:${userId}`)
+    .setCustomId(`captcha_modal:${guildId}:${userId}`)
     .setTitle("Entrez le code de vérification")
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -98,12 +102,17 @@ export async function handleCaptchaButton(interaction: ButtonInteraction) {
 }
 
 export async function handleCaptchaModal(interaction: ModalSubmitInteraction) {
-  const userId = interaction.customId.split(":")[1];
-  if (!userId) return;
+  const [, guildId, userId] = interaction.customId.split(":");
+  if (!guildId || !userId) return;
 
-  const data = pending.get(userId);
+  const data = pending.get(captchaKey(guildId, userId));
   if (!data) {
     await interaction.reply({ embeds: [dangerEmbed("Session expirée", "Ce captcha a expiré.")], ephemeral: true });
+    return;
+  }
+
+  if (!interaction.guild || interaction.guild.id !== guildId) {
+    await interaction.reply({ embeds: [dangerEmbed("Session invalide", "Ce captcha appartient à un autre serveur.")], ephemeral: true });
     return;
   }
 
@@ -118,7 +127,7 @@ export async function handleCaptchaModal(interaction: ModalSubmitInteraction) {
   }
 
   clearTimeout(data.timeout);
-  pending.delete(userId);
+  pending.delete(captchaKey(guildId, userId));
 
   try {
     const guild = interaction.guild!;
