@@ -4,6 +4,7 @@ import { handleCaptchaButton, handleCaptchaModal } from "../systems/captcha.js";
 import { handleTicketClose } from "../systems/ticket.js";
 import { handleGiveawayButton } from "../systems/giveaway.js";
 import { handleSuggestVote } from "../commands/community/suggest.js";
+import { handlePollVote } from "../commands/community/poll.js";
 import { dangerEmbed } from "../utils/embeds.js";
 import { logger } from "../../lib/logger.js";
 
@@ -55,6 +56,10 @@ export const interactionCreateEvent: BotEvent = {
       }
       if (btn.customId.startsWith("suggest:up:") || btn.customId.startsWith("suggest:down:")) {
         await handleSuggestVote(btn).catch((err) => logger.error({ err }, "[Suggest] Vote error"));
+        return;
+      }
+      if (btn.customId.startsWith("poll:")) {
+        await handlePollVote(btn).catch((err) => logger.error({ err }, "[Poll] Vote error"));
         return;
       }
     }
