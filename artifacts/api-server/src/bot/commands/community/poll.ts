@@ -1,13 +1,85 @@
 import {
   SlashCommandBuilder, PermissionsBitField,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ChannelType,
+  ChannelType, type ButtonInteraction, type Client,
 } from "discord.js";
 import type { Command } from "../../types.js";
 import { requirePermission, Perms } from "../../utils/permissions.js";
 import { dangerEmbed, successEmbed } from "../../utils/embeds.js";
+import {
+  createPoll, updatePoll, deletePoll, getPollByMessageId, getActivePolls,
+  getPollVote, recordPollVote, getPollVoteCounts,
+} from "../../utils/dbops.js";
+import { MAX_TIMEOUT_MS } from "../../utils/time.js";
 
 const OPTION_EMOJIS = ["🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭", "🇮", "🇯"];
+const pollTimers = new Map<number, NodeJS.Timeout>();
+
+async function closePoll(client: Client, record: import("@workspace/db").Poll) {
+  if (record.closed) return;
+  await updatePoll(record.id, { closed: true });
+  pollTimers.delete(record.id);
+  if (!record.messageId) return;
+  const channel = client.channels.cache.get(record.channelId);
+  if (!channel?.isTextBased() || channel.isDMBased()) return;
+  const message = await channel.messages.fetch(record.messageId).catch(() => null);
+  if (message) await message.edit({ components: [] }).catch(() => null);
+}
+
+
+function schedulePoll(client: Client, record: import("@workspace/db").Poll) {
+  const remaining = record.endsAt.getTime() - Date.now();
+  if (remaining <= 0) {
+    void closePoll(client, record).catch(() => null);
+    return;
+  }
+  const timer = setTimeout(() => {
+    const left = record.endsAt.getTime() - Date.now();
+    if (left > 0) schedulePoll(client, record);
+    else void closePoll(client, record).catch(() => null);
+  }, Math.min(remaining, MAX_TIMEOUT_MS));
+  pollTimers.set(record.id, timer);
+}
+
+
+export async function handlePollVote(interaction: ButtonInteraction) {
+  const parts = interaction.customId.split(":");
+  const pollId = parseInt(parts[1] ?? "0", 10);
+  const optionIndex = parseInt(parts[2] ?? "-1", 10);
+  if (!pollId || optionIndex < 0) return;
+
+  const record = await getPollByMessageId(interaction.message.id);
+  if (!record || record.id !== pollId || optionIndex >= record.options.length) {
+    await interaction.reply({ embeds: [dangerEmbed("Sondage introuvable", "Ce sondage n’est plus disponible.")], ephemeral: true });
+    return;
+  }
+  if (record.closed || record.endsAt.getTime() <= Date.now()) {
+    await closePoll(interaction.client, record);
+    await interaction.reply({ embeds: [dangerEmbed("Sondage terminé", "La période de vote est terminée.")], ephemeral: true });
+    return;
+  }
+
+  const previous = await getPollVote(record.id, interaction.user.id);
+  if (previous?.optionIndex === optionIndex) {
+    await interaction.reply({ content: "⚠️ Vous avez déjà voté pour cette option.", ephemeral: true });
+    return;
+  }
+  await recordPollVote({ pollId: record.id, userId: interaction.user.id, optionIndex });
+  const rows = await getPollVoteCounts(record.id);
+  const counts = new Array(record.options.length).fill(0);
+  for (const row of rows) counts[row.optionIndex] = row.count;
+  const baseEmbed = interaction.message.embeds[0];
+  const updatedEmbed = baseEmbed ? EmbedBuilder.from(baseEmbed)
+    .setDescription(record.options.map((option, index) => `${OPTION_EMOJIS[index]} **${option}** — ${counts[index]} vote(s)`).join("\n\n"))
+    .setFooter({ text: `Moderax • ${counts.reduce((sum, count) => sum + count, 0)} participant(s)` }) : null;
+  if (updatedEmbed) await interaction.message.edit({ embeds: [updatedEmbed] }).catch(() => null);
+  await interaction.reply({ content: `✅ Vote pour **${record.options[optionIndex]}** enregistré !`, ephemeral: true });
+}
+
+export async function setupPolls(client: Client) {
+  const active = await getActivePolls();
+  for (const record of active) schedulePoll(client, record);
+}
 
 export const poll: Command = {
   data: new SlashCommandBuilder()
@@ -48,6 +120,16 @@ export const poll: Command = {
 
     await interaction.deferReply({ ephemeral: true });
 
+    const record = await createPoll({
+      guildId: interaction.guild!.id,
+      channelId: channel.id,
+      question,
+      options,
+      createdById: interaction.user.id,
+      endsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000),
+      closed: false,
+    });
+
     const embed = new EmbedBuilder()
       .setColor(0x636efa)
       .setTitle(`📊 Sondage : ${question}`)
@@ -65,7 +147,7 @@ export const poll: Command = {
       }
       currentRow.addComponents(
         new ButtonBuilder()
-          .setCustomId(`poll:${i}`)
+          .setCustomId(`poll:${record.id}:${i}`)
           .setLabel(opt.slice(0, 80))
           .setEmoji(OPTION_EMOJIS[i]!)
           .setStyle(ButtonStyle.Secondary),
@@ -76,34 +158,13 @@ export const poll: Command = {
     const msg = await channel.send({ embeds: [embed], components: rows });
     await interaction.editReply({ embeds: [successEmbed("Sondage créé", `Sondage envoyé dans ${channel}.`)] });
 
-    // In-memory vote tracking (per session, one vote per user)
-    const votes  = new Map<string, number>();  // userId → optionIndex
-    const counts = new Array<number>(options.length).fill(0);
-
-    const collector = msg.createMessageComponentCollector({ time: 7 * 24 * 60 * 60 * 1_000 });
-    collector.on("collect", async (btn) => {
-      if (!btn.isButton()) return;
-      const optIdx = parseInt(btn.customId.split(":")[1] ?? "0", 10);
-      if (isNaN(optIdx) || optIdx >= options.length) return;
-
-      const prev = votes.get(btn.user.id);
-      if (prev !== undefined) {
-        if (prev === optIdx) {
-          await btn.reply({ content: "⚠️ Vous avez déjà voté pour cette option.", ephemeral: true });
-          return;
-        }
-        counts[prev]!--;
-      }
-      votes.set(btn.user.id, optIdx);
-      counts[optIdx]!++;
-
-      const updatedEmbed = EmbedBuilder.from(embed)
-        .setDescription(options.map((opt, i) => `${OPTION_EMOJIS[i]} **${opt}** — ${counts[i]} vote(s)`).join("\n\n"))
-        .setFooter({ text: `Moderax • ${votes.size} participant(s)` });
-
-      await msg.edit({ embeds: [updatedEmbed] });
-      await btn.reply({ content: `✅ Vote pour **${options[optIdx]}** enregistré !`, ephemeral: true });
-    });
+    try {
+      await updatePoll(record.id, { messageId: msg.id });
+      schedulePoll(interaction.client, { ...record, messageId: msg.id });
+    } catch (err) {
+      await deletePoll(record.id).catch(() => null);
+      throw err;
+    }
   },
 };
 
