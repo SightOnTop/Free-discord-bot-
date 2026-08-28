@@ -16,16 +16,15 @@ export const guildCreateEvent: BotEvent = {
     const embeds = welcomeBotEmbed(avatarUrl);
 
     // Send to system channel or first writable text channel
+    const me = guild.members.me;
     const target =
-      guild.systemChannel ??
-      guild.channels.cache
-        .filter(
-          (c) =>
-            c.isTextBased() &&
-            "permissionsFor" in c &&
-            c.permissionsFor(guild.members.me!)?.has("SendMessages"),
-        )
-        .first();
+      (me && guild.systemChannel && guild.systemChannel.permissionsFor(me)?.has("SendMessages")
+        ? guild.systemChannel
+        : null) ??
+      guild.channels.cache.find((channel) => {
+        if (!me || !channel.isTextBased() || !("permissionsFor" in channel)) return false;
+        return channel.permissionsFor(me)?.has("SendMessages") ?? false;
+      });
 
     if (target?.isTextBased()) {
       // Send both embeds in one message (Discord allows up to 10 embeds)
