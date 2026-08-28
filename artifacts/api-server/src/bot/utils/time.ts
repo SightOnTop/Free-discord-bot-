@@ -1,1 +1,30 @@
-/** Maximum delay accepted by Node.js setTimeout. */\nexport const MAX_TIMEOUT_MS = 2_147_000_000;\n\n/** Parse a duration string like \"10m\", \"1h\", \"2d\" → milliseconds */\nexport function parseDuration(input: string): number | null {\n  const match = input.trim().match(/^(\\d+)(s|m|h|d)$/i);\n  if (!match) return null;\n\n  const value = Number(match[1]);\n  if (!Number.isSafeInteger(value) || value <= 0) return null;\n\n  const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 } as const;\n  const multiplier = units[match[2]!.toLowerCase() as keyof typeof units];\n  const milliseconds = value * multiplier;\n  return Number.isSafeInteger(milliseconds) && milliseconds > 0 ? milliseconds : null;\n}\n\n/** Format ms → human string */\nexport function formatDuration(ms: number): string {\n  if (ms < 60000) return Math.floor(ms / 1000) + "s";\n  if (ms < 3600000) return Math.floor(ms / 60000) + "m";\n  if (ms < 86400000) return Math.floor(ms / 3600000) + "h";\n  return Math.floor(ms / 86400000) + "j";\n}\n\n/** Format a Date → Discord timestamp */\nexport function discordTimestamp(date: Date, style: \"R\" | \"F\" | \"D\" | \"T\" = \"R\"): string {\n  return "<t:" + Math.floor(date.getTime() / 1000) + ":" + style + ">";\n}\n
+/** Maximum delay accepted by Node.js setTimeout. */
+export const MAX_TIMEOUT_MS = 2_147_000_000;
+
+/** Parse a duration string like 10m, 1h, 2d → milliseconds */
+export function parseDuration(input: string): number | null {
+  const match = input.trim().match(/^(\d+)(s|m|h|d)$/i);
+  if (!match) return null;
+
+  const value = Number(match[1]);
+  if (!Number.isSafeInteger(value) || value <= 0) return null;
+
+  const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 } as const;
+  const multiplier = units[match[2]!.toLowerCase() as keyof typeof units];
+  const milliseconds = value * multiplier;
+  return Number.isSafeInteger(milliseconds) && milliseconds > 0 ? milliseconds : null;
+}
+
+/** Format ms → human string */
+export function formatDuration(ms: number): string {
+  if (ms < 60000) return Math.floor(ms / 1000) + "s";
+  if (ms < 3600000) return Math.floor(ms / 60000) + "m";
+  if (ms < 86400000) return Math.floor(ms / 3600000) + "h";
+  return Math.floor(ms / 86400000) + "j";
+}
+
+/** Format a Date → Discord timestamp */
+/** @param style Discord timestamp style */
+export function discordTimestamp(date: Date, style: "R" | "F" | "D" | "T" = "R"): string {
+  return "<t:" + Math.floor(date.getTime() / 1000) + ":" + style + ">";
+}
