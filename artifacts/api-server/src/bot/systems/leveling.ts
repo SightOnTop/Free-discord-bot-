@@ -1,5 +1,6 @@
 import { type Client, type Message, EmbedBuilder } from "discord.js";
-import { getUserLevel, upsertUserLevel, getGuild } from "../utils/dbops.js";
+import { awardUserXp, getGuild } from "../utils/dbops.js";
+import { logger } from "../../lib/logger.js";
 
 const XP_COOLDOWN_MS = 60_000; // 1 minute between XP gains
 const XP_MIN = 15;
@@ -24,51 +25,40 @@ export function progressBar(current: number, needed: number, total = 10): string
 
 export function setupLeveling(client: Client) {
   client.on("messageCreate", async (message: Message) => {
-    if (message.author.bot || !message.guild) return;
-    if (!message.content || message.content.startsWith("/")) return;
+    try {
+      if (message.author.bot || !message.guild) return;
+      if (!message.content || message.content.startsWith("/")) return;
 
-    const config = await getGuild(message.guild.id);
-    if (!config?.levelUpEnabled) return;
+      const config = await getGuild(message.guild.id);
+      if (!config?.levelUpEnabled) return;
 
-    const now = new Date();
-    const existing = await getUserLevel(message.guild.id, message.author.id);
+      const xpGain = Math.floor(Math.random() * (XP_MAX - XP_MIN + 1)) + XP_MIN;
+      const awarded = await awardUserXp({
+        guildId: message.guild.id,
+        userId: message.author.id,
+        now: new Date(),
+        xpGain,
+        cooldownMs: XP_COOLDOWN_MS,
+      });
+      if (!awarded || awarded.newLevel <= awarded.oldLevel) return;
 
-    // Cooldown check
-    if (existing?.lastXpAt && now.getTime() - existing.lastXpAt.getTime() < XP_COOLDOWN_MS) return;
-
-    const xpGain = Math.floor(Math.random() * (XP_MAX - XP_MIN + 1)) + XP_MIN;
-    const oldXp = existing?.xp ?? 0;
-    const newXp = oldXp + xpGain;
-    const oldLevel = existing?.level ?? 0;
-    const newLevel = levelFromXp(newXp);
-
-    await upsertUserLevel({
-      guildId: message.guild.id,
-      userId: message.author.id,
-      xp: newXp,
-      level: newLevel,
-      totalMessages: (existing?.totalMessages ?? 0) + 1,
-      lastXpAt: now,
-    });
-
-    // Level up notification
-    if (newLevel > oldLevel) {
       const embed = new EmbedBuilder()
         .setColor(0x00d26a)
         .setTitle("⬆️ Level Up !")
-        .setDescription(`${message.author} vient de passer au **niveau ${newLevel}** ! 🎉`)
-        .addFields({ name: "📊 XP total", value: `${newXp.toLocaleString()}`, inline: true })
+        .setDescription(`${message.author} vient de passer au **niveau ${awarded.newLevel}** ! 🎉`)
+        .addFields({ name: "📊 XP total", value: `${awarded.newXp.toLocaleString()}`, inline: true })
         .setThumbnail(message.author.displayAvatarURL())
         .setFooter({ text: "Moderax • Système de niveaux" })
         .setTimestamp();
 
-      // Send to dedicated channel or current channel
       const targetChannelId = config.levelUpChannelId ?? message.channel.id;
       const targetChannel = message.guild.channels.cache.get(targetChannelId);
-      const ch = targetChannel?.isTextBased() ? targetChannel : message.channel;
-      if (ch.isTextBased() && !ch.isDMBased()) {
-        await ch.send({ content: `${message.author}`, embeds: [embed] }).catch(() => null);
+      const channel = targetChannel?.isTextBased() ? targetChannel : message.channel;
+      if (channel.isTextBased() && !channel.isDMBased()) {
+        await channel.send({ content: `${message.author}`, embeds: [embed] }).catch(() => null);
       }
+    } catch (err) {
+      logger.error({ err, guildId: message.guild?.id, userId: message.author.id }, "[Leveling] Erreur traitement XP");
     }
   });
 }
