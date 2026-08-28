@@ -81,11 +81,12 @@ export const giveaway: Command = {
           await interaction.editReply({ embeds: [dangerEmbed("Introuvable", "Giveaway introuvable ou pas encore terminé.")] });
           return;
         }
-        if (g.entries.length === 0) {
-          await interaction.editReply({ embeds: [dangerEmbed("Pas de participants", "Aucun participant pour re-tirer.")] });
+        const eligibleEntries = g.entries.filter((entry) => !g.winners.includes(entry));
+        if (eligibleEntries.length === 0) {
+          await interaction.editReply({ embeds: [dangerEmbed("Pas de participants", "Tous les participants ont déjà gagné.")] });
           return;
         }
-        const newWinner = g.entries[Math.floor(Math.random() * g.entries.length)]!;
+        const newWinner = eligibleEntries[Math.floor(Math.random() * eligibleEntries.length)]!;
         await updateGiveaway(id, { winners: [...g.winners, newWinner] });
         const channel = interaction.client.channels.cache.get(g.channelId);
         if (channel?.isTextBased() && !channel.isDMBased()) {
