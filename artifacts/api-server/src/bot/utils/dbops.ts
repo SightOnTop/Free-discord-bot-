@@ -168,6 +168,12 @@ export async function getPendingReminders() {
   return db.select().from(remindersTable).where(and(eq(remindersTable.sent, false), lt(remindersTable.remindAt, new Date())));
 }
 
+export async function getUnsentReminders() {
+  return db.select().from(remindersTable)
+    .where(eq(remindersTable.sent, false))
+    .orderBy(asc(remindersTable.remindAt));
+}
+
 // ── Suggestions ───────────────────────────────────────────────────────────────
 
 export async function createSuggestion(data: InsertSuggestion) {
