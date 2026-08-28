@@ -1,5 +1,5 @@
 import type { Client } from "discord.js";
-import { getExpiredTemproles, deleteTemprole, createTemprole } from "../utils/dbops.js";
+import { getExpiredTemproles, getActiveTemproles, deleteTemprole, createTemprole } from "../utils/dbops.js";
 import { parseDuration, MAX_TIMEOUT_MS } from "../utils/time.js";
 import { logger } from "../../lib/logger.js";
 import type { InsertTemprole } from "@workspace/db";
@@ -8,13 +8,13 @@ const scheduled = new Map<number, NodeJS.Timeout>();
 
 async function removeTemprole(client: Client, id: number, guildId: string, userId: string, roleId: string) {
   try {
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member) await member.roles.remove(roleId, "Rôle temporaire expiré");
+    }
     await deleteTemprole(id);
     scheduled.delete(id);
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) return;
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return;
-    await member.roles.remove(roleId, "Rôle temporaire expiré").catch(() => null);
     logger.info({ userId, roleId, guildId }, "[TempRole] Rôle expiré retiré");
   } catch (err) {
     logger.error({ err }, "[TempRole] Erreur retrait rôle");
@@ -22,6 +22,8 @@ async function removeTemprole(client: Client, id: number, guildId: string, userI
 }
 
 function scheduleTemprole(client: Client, id: number, guildId: string, userId: string, roleId: string, expiresAt: Date) {
+  const existingTimer = scheduled.get(id);
+  if (existingTimer) clearTimeout(existingTimer);
   const ms = expiresAt.getTime() - Date.now();
   if (ms <= 0) { void removeTemprole(client, id, guildId, userId, roleId); return; }
   const timer = setTimeout(() => {
@@ -47,7 +49,11 @@ export async function setupTemproles(client: Client) {
     for (const tr of expired) {
       await removeTemprole(client, tr.id, tr.guildId, tr.userId, tr.roleId);
     }
-    logger.info(`[TempRole] ${expired.length} rôle(s) temporaire(s) expiré(s) traité(s)`);
+    const active = await getActiveTemproles();
+    for (const tr of active) {
+      scheduleTemprole(client, tr.id, tr.guildId, tr.userId, tr.roleId, tr.expiresAt);
+    }
+    logger.info(`[TempRole] ${expired.length} rôle(s) expiré(s) traité(s), ${active.length} timer(s) restauré(s)`);
   } catch (err) {
     logger.error({ err }, "[TempRole] Erreur restauration");
   }
