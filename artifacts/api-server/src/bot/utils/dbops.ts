@@ -1,14 +1,14 @@
-import { eq, and, desc, asc, sql, lt } from "drizzle-orm";
+import { eq, and, desc, asc, sql, lt, gt } from "drizzle-orm";
 import {
   db,
   guildsTable, warningsTable, ticketsTable, modlogsTable,
   levelsTable, badwordsTable, giveawaysTable, remindersTable,
-  suggestionsTable, temprolesTable,
+  suggestionsTable, suggestionVotesTable, temprolesTable, pollsTable, pollVotesTable,
 } from "@workspace/db";
 import type {
   InsertGuild, InsertWarning, InsertTicket, InsertModlog,
   InsertLevel, InsertBadword, InsertGiveaway, InsertReminder,
-  InsertSuggestion, InsertTemprole,
+  InsertSuggestion, InsertSuggestionVote, InsertTemprole, InsertPoll, InsertPollVote,
 } from "@workspace/db";
 
 // ── Guild Config ──────────────────────────────────────────────────────────────
@@ -203,4 +203,96 @@ export async function getExpiredTemproles() {
 
 export async function deleteTemprole(id: number) {
   await db.delete(temprolesTable).where(eq(temprolesTable.id, id));
+}
+
+// ── Atomic interaction state ──────────────────────────────────────────────────
+
+export async function toggleGiveawayEntry(id: number, userId: string) {
+  return db.transaction(async (tx) => {
+    const rows = await tx.select().from(giveawaysTable).where(eq(giveawaysTable.id, id)).for("update");
+    const giveaway = rows[0];
+    if (!giveaway || giveaway.ended) return null;
+    const joined = giveaway.entries.includes(userId);
+    const entries = joined ? giveaway.entries.filter((entry) => entry !== userId) : [...giveaway.entries, userId];
+    await tx.update(giveawaysTable).set({ entries }).where(eq(giveawaysTable.id, id));
+    return { giveaway: { ...giveaway, entries }, added: !joined };
+  });
+}
+
+export async function awardUserXp(data: { guildId: string; userId: string; now: Date; xpGain: number; cooldownMs: number }) {
+  return db.transaction(async (tx) => {
+    const rows = await tx.select().from(levelsTable)
+      .where(and(eq(levelsTable.guildId, data.guildId), eq(levelsTable.userId, data.userId)))
+      .for("update");
+    const existing = rows[0];
+    if (existing?.lastXpAt && data.now.getTime() - existing.lastXpAt.getTime() < data.cooldownMs) return null;
+    const oldXp = existing?.xp ?? 0;
+    const oldLevel = existing?.level ?? 0;
+    const newXp = oldXp + data.xpGain;
+    const newLevel = Math.floor(Math.sqrt(newXp / 100));
+    const totalMessages = (existing?.totalMessages ?? 0) + 1;
+    await tx.insert(levelsTable).values({ guildId: data.guildId, userId: data.userId, xp: newXp, level: newLevel, totalMessages, lastXpAt: data.now }).onConflictDoUpdate({
+      target: [levelsTable.guildId, levelsTable.userId],
+      set: { xp: newXp, level: newLevel, totalMessages, lastXpAt: data.now },
+    });
+    return { oldLevel, newLevel, newXp, totalMessages };
+  });
+}
+
+export async function getActiveTemproles() {
+  return db.select().from(temprolesTable).where(gt(temprolesTable.expiresAt, new Date()));
+}
+
+export async function createPoll(data: InsertPoll) {
+  const rows = await db.insert(pollsTable).values(data).returning();
+  return rows[0]!;
+}
+
+export async function updatePoll(id: number, data: Partial<InsertPoll>) {
+  await db.update(pollsTable).set(data).where(eq(pollsTable.id, id));
+}
+
+export async function deletePoll(id: number) {
+  await db.delete(pollsTable).where(eq(pollsTable.id, id));
+}
+
+export async function getPollByMessageId(messageId: string) {
+  const rows = await db.select().from(pollsTable).where(eq(pollsTable.messageId, messageId)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function getActivePolls() {
+  return db.select().from(pollsTable).where(eq(pollsTable.closed, false));
+}
+
+export async function getPollVote(pollId: number, userId: string) {
+  const rows = await db.select().from(pollVotesTable).where(and(eq(pollVotesTable.pollId, pollId), eq(pollVotesTable.userId, userId))).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function recordPollVote(data: InsertPollVote) {
+  const rows = await db.insert(pollVotesTable).values(data).onConflictDoUpdate({
+    target: [pollVotesTable.pollId, pollVotesTable.userId],
+    set: { optionIndex: data.optionIndex },
+  }).returning();
+  return rows[0]!;
+}
+
+export async function getPollVoteCounts(pollId: number) {
+  const rows = await db.select({ optionIndex: pollVotesTable.optionIndex, count: sql<number>`count(*)` }).from(pollVotesTable)
+    .where(eq(pollVotesTable.pollId, pollId)).groupBy(pollVotesTable.optionIndex);
+  return rows.map((row) => ({ optionIndex: row.optionIndex, count: Number(row.count) }));
+}
+
+export async function castSuggestionVote(data: InsertSuggestionVote) {
+  return db.transaction(async (tx) => {
+    const rows = await tx.insert(suggestionVotesTable).values(data).onConflictDoNothing().returning();
+    if (!rows[0]) return false;
+    if (data.vote === "up") {
+      await tx.update(suggestionsTable).set({ upvotes: sql`${suggestionsTable.upvotes} + 1` }).where(eq(suggestionsTable.id, data.suggestionId));
+    } else {
+      await tx.update(suggestionsTable).set({ downvotes: sql`${suggestionsTable.downvotes} + 1` }).where(eq(suggestionsTable.id, data.suggestionId));
+    }
+    return true;
+  });
 }
