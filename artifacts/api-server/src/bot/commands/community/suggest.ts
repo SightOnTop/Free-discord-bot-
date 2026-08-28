@@ -6,12 +6,10 @@ import type { Command } from "../../types.js";
 import { requirePermission, Perms } from "../../utils/permissions.js";
 import {
   getGuild, updateGuild, createSuggestion,
-  getSuggestionByMessageId, updateSuggestion,
+  getSuggestionByMessageId, updateSuggestion, castSuggestionVote,
 } from "../../utils/dbops.js";
 import { successEmbed, dangerEmbed, warningEmbed } from "../../utils/embeds.js";
 
-// Tracks per-message who already voted to prevent duplicates (in-memory per session)
-const votedUsers = new Map<string, Set<string>>(); // messageId → Set<userId>
 
 function suggestionEmbed(
   content: string,
@@ -180,22 +178,12 @@ export const suggest: Command = {
 // ── Vote handler (called from interactionCreate) ──────────────────────────────
 export async function handleSuggestVote(interaction: ButtonInteraction) {
   const parts = interaction.customId.split(":");
-  const type = parts[1]; // "up" | "down"
+  const type = parts[1];
   const suggestionId = parseInt(parts[2] ?? "0", 10);
   if (!suggestionId || (type !== "up" && type !== "down")) return;
 
-  // Duplicate vote prevention
-  const key = interaction.message.id;
-  if (!votedUsers.has(key)) votedUsers.set(key, new Set());
-  const voters = votedUsers.get(key)!;
-  if (voters.has(interaction.user.id)) {
-    await interaction.reply({ content: "⚠️ Vous avez déjà voté pour cette suggestion.", ephemeral: true });
-    return;
-  }
-  voters.add(interaction.user.id);
-
   const suggestion = await getSuggestionByMessageId(interaction.message.id);
-  if (!suggestion) {
+  if (!suggestion || suggestion.id !== suggestionId) {
     await interaction.reply({ embeds: [dangerEmbed("Introuvable", "Suggestion introuvable.")], ephemeral: true });
     return;
   }
@@ -204,18 +192,18 @@ export async function handleSuggestVote(interaction: ButtonInteraction) {
     return;
   }
 
-  const newUpvotes   = suggestion.upvotes   + (type === "up"   ? 1 : 0);
-  const newDownvotes = suggestion.downvotes + (type === "down" ? 1 : 0);
-  await updateSuggestion(suggestionId, { upvotes: newUpvotes, downvotes: newDownvotes });
+  const recorded = await castSuggestionVote({ suggestionId, userId: interaction.user.id, vote: type });
+  if (!recorded) {
+    await interaction.reply({ content: "⚠️ Vous avez déjà voté pour cette suggestion.", ephemeral: true });
+    return;
+  }
 
-  const updatedEmbed = suggestionEmbed(
-    suggestion.content,
-    `Utilisateur`,
-    suggestionId,
-    suggestion.status,
-    newUpvotes,
-    newDownvotes,
-  );
+  const updated = await getSuggestionByMessageId(interaction.message.id);
+  if (!updated) {
+    await interaction.reply({ embeds: [dangerEmbed("Erreur", "Le vote a été enregistré mais la suggestion est indisponible.")], ephemeral: true });
+    return;
+  }
+  const updatedEmbed = suggestionEmbed(updated.content, "Utilisateur", updated.id, updated.status, updated.upvotes, updated.downvotes);
   await interaction.message.edit({ embeds: [updatedEmbed] }).catch(() => null);
   await interaction.reply({
     content: type === "up" ? "✅ Vote **Pour** enregistré !" : "✅ Vote **Contre** enregistré !",
