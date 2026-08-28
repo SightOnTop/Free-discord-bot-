@@ -8,3 +8,5 @@ export * from "./giveaways";
 export * from "./reminders";
 export * from "./suggestions";
 export * from "./temproles";
+export * from "./polls";
+export * from "./suggestionVotes";
