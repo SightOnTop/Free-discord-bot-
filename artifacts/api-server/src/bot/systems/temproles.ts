@@ -1,6 +1,6 @@
 import type { Client } from "discord.js";
 import { getExpiredTemproles, deleteTemprole, createTemprole } from "../utils/dbops.js";
-import { parseDuration } from "../utils/time.js";
+import { parseDuration, MAX_TIMEOUT_MS } from "../utils/time.js";
 import { logger } from "../../lib/logger.js";
 import type { InsertTemprole } from "@workspace/db";
 
@@ -24,7 +24,14 @@ async function removeTemprole(client: Client, id: number, guildId: string, userI
 function scheduleTemprole(client: Client, id: number, guildId: string, userId: string, roleId: string, expiresAt: Date) {
   const ms = expiresAt.getTime() - Date.now();
   if (ms <= 0) { void removeTemprole(client, id, guildId, userId, roleId); return; }
-  const timer = setTimeout(() => removeTemprole(client, id, guildId, userId, roleId), ms);
+  const timer = setTimeout(() => {
+    const remaining = expiresAt.getTime() - Date.now();
+    if (remaining > 0) {
+      scheduleTemprole(client, id, guildId, userId, roleId, expiresAt);
+      return;
+    }
+    void removeTemprole(client, id, guildId, userId, roleId);
+  }, Math.min(ms, MAX_TIMEOUT_MS));
   scheduled.set(id, timer);
 }
 
