@@ -52,6 +52,7 @@ import { setupBadwords } from "./systems/badwords.js";
 import { setupGiveaways } from "./systems/giveaway.js";
 import { setupReminders } from "./systems/reminder.js";
 import { setupTemproles } from "./systems/temproles.js";
+import { setupPolls } from "./commands/community/poll.js";
 
 // ── All Commands ──────────────────────────────────────────────────────────────
 const ALL_COMMANDS: Command[] = [
@@ -128,6 +129,7 @@ export async function startBot() {
     await deployCommands(client, token);
     // Setup async systems that need DB
     await setupGiveaways(readyClient).catch((err) => logger.error({ err }, "[Giveaway] Setup error"));
+    await setupPolls(readyClient).catch((err) => logger.error({ err }, "[Poll] Setup error"));
     await setupReminders(readyClient).catch((err) => logger.error({ err }, "[Reminders] Setup error"));
     await setupTemproles(readyClient).catch((err) => logger.error({ err }, "[TempRoles] Setup error"));
   });
