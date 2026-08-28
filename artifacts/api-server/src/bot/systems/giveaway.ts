@@ -4,7 +4,7 @@ import {
 import {
   createGiveaway, updateGiveaway, getActiveGiveaways, getGiveawayById, getExpiredGiveaways,
 } from "../utils/dbops.js";
-import { parseDuration, formatDuration, discordTimestamp } from "../utils/time.js";
+import { parseDuration, formatDuration, discordTimestamp, MAX_TIMEOUT_MS } from "../utils/time.js";
 import { successEmbed, dangerEmbed } from "../utils/embeds.js";
 import { logger } from "../../lib/logger.js";
 import type { Giveaway } from "@workspace/db";
@@ -34,6 +34,12 @@ function giveawayEmbed(g: Giveaway, ended = false) {
 }
 
 export async function endGiveaway(client: Client, giveawayId: number, force = false) {
+  const activeTimer = timers.get(giveawayId);
+  if (activeTimer) {
+    clearTimeout(activeTimer);
+    timers.delete(giveawayId);
+  }
+
   const g = await getGiveawayById(giveawayId);
   if (!g || g.ended) return;
 
@@ -75,8 +81,18 @@ export async function endGiveaway(client: Client, giveawayId: number, force = fa
 
 function scheduleGiveaway(client: Client, g: Giveaway) {
   const ms = g.endsAt.getTime() - Date.now();
-  if (ms <= 0) { void endGiveaway(client, g.id); return; }
-  const timer = setTimeout(() => endGiveaway(client, g.id), ms);
+  if (ms <= 0) {
+    void endGiveaway(client, g.id).catch((err) => logger.error({ err, giveawayId: g.id }, "[Giveaway] Erreur fin"));
+    return;
+  }
+  const timer = setTimeout(() => {
+    const remaining = g.endsAt.getTime() - Date.now();
+    if (remaining > 0) {
+      scheduleGiveaway(client, g);
+      return;
+    }
+    void endGiveaway(client, g.id).catch((err) => logger.error({ err, giveawayId: g.id }, "[Giveaway] Erreur fin"));
+  }, Math.min(ms, MAX_TIMEOUT_MS));
   timers.set(g.id, timer);
 }
 
@@ -93,6 +109,9 @@ export async function startGiveaway(opts: {
   if (!ms) throw new Error("Durée invalide");
   const endsAt = new Date(Date.now() + ms);
 
+  const channel = opts.client.channels.cache.get(opts.channelId);
+  if (!channel?.isTextBased() || channel.isDMBased()) throw new Error("Salon invalide");
+
   const g = await createGiveaway({
     guildId: opts.guildId,
     channelId: opts.channelId,
@@ -104,9 +123,6 @@ export async function startGiveaway(opts: {
     ended: false,
     winners: [],
   });
-
-  const channel = opts.client.channels.cache.get(opts.channelId);
-  if (!channel?.isTextBased() || channel.isDMBased()) throw new Error("Salon invalide");
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`giveaway:enter:${g.id}`).setLabel("🎉 Participer").setStyle(ButtonStyle.Success)
